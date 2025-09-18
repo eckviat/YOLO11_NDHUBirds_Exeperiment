@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual environments
+.venv/
+.env/
+.ipynb_checkpoints/
+
+# YOLO 輸出
+runs/
+results/
+
+# 大型檔案
+weights/
+data/
