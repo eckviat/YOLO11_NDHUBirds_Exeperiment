@@ -1,71 +1,93 @@
 """
 Module: yolo_detector.py
-Function: Run YOLO detection and save both original YOLO outputs and standardized CSV.
+Description: 封裝 YOLOv11 模型操作，包含載入、推論、驗證與結果輸出。
 """
-from ultralytics import YOLO
-from pathlib import Path
 import os
+import time
+from pathlib import Path
+from ultralytics import YOLO
 from output_formatter import save_results
 
+
+# ==========================================================
+# 模型載入
+# ==========================================================
 def load_model(weights_path):
-    """
-    Load YOLOv11 model from weights.
-    
-    Args:
-        weights_path (str or Path): Path to the YOLO model file (.pt)
-    Returns:
-        model: YOLO model instance
-    """
-    model = YOLO(str(weights_path))
-    return model
+    """載入 YOLO 模型。"""
+    return YOLO(str(weights_path))
 
-def run_detection(model, source_path, output_dir, imgsz=960, conf=0.3, iou=0.3):
-    """
-    Run YOLO detection on an image folder or video file and save results.
 
-    Args:
-        model: Loaded YOLO model.
-        source_path (str or Path): Image folder or video file.
-        output_dir (str or Path): Directory to save detection results.
-        imgsz (int): Image size for inference.
-        conf (float): Confidence threshold.
-        iou (float): IoU threshold.
+# ==========================================================
+# 推論模式
+# ==========================================================
+def run_detection(model, source_path, output_dir, imgsz=960, conf=0.4, iou=0.3, stream=False, half=False):
+    """
+    執行 YOLO 推論並儲存標準化結果。
+
     Returns:
-        Results object (from Ultralytics)
+        tuple: (CSV路徑, 平均延遲 ms)
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # -----------------------------
-    # 判斷 CSV 檔名
-    # -----------------------------
-    if source_path.is_dir():
-        csv_name = f"{source_path.parent.name}.csv"  # e.g. IMG_0004/images -> IMG_0004.csv
-    else:
-        csv_name = f"{source_path.stem}.csv"         # e.g. video.mp4 -> video.csv
-
+    csv_name = f"{source_path.parent.name}.csv" if source_path.is_dir() else f"{source_path.stem}.csv"
     csv_path = output_dir / csv_name
+    if csv_path.exists(): csv_path.unlink()
     
-    # ============================================
-    # 1. YOLO 原始輸出 (txt, 圖片)
-    # ============================================
+    t_start = time.perf_counter()
     results = model.predict(
-        source=str(source_path),
-        imgsz=imgsz,
-        conf=conf,
-        iou=iou,
-        save=True,
-        save_conf=True,
-        save_txt=True,
-        project=str(output_dir),
-        name="predict",
-        verbose=False
+        source=str(source_path), imgsz=imgsz, conf=conf, iou=iou,
+        save=True, save_conf=False, save_txt=False,
+        project=str(output_dir), name="predict",
+        verbose=False, agnostic_nms=True, stream=stream, half=half
+    )
+    if stream: results = list(results)
+    t_end = time.perf_counter()
+    
+    print(f"\n✅ 正在儲存結果: {csv_path}")
+    for i, r in enumerate(results):
+        save_results(r, i, csv_path, source=source_path, save_mode="auto")
+
+    frames = len(results)
+    latency = (t_end - t_start) * 1000 / frames if frames > 0 else 0
+    print(f"   ⏱️ 偵測耗時: {(t_end-t_start)*1000:.2f} ms (平均 {latency:.2f} ms/frame)")
+    
+    return csv_path, latency
+
+
+# ==========================================================
+# 驗證模式
+# ==========================================================
+def run_validation(model, data_yaml, output_dir, imgsz=960, conf=0.4, iou=0.3):
+    """執行 YOLO val()。"""
+    return model.val(
+        data=str(data_yaml), imgsz=imgsz, conf=conf, iou=iou,
+        save_json=True, project=str(output_dir), name="val", verbose=True
     )
 
-    # ============================================
-    # 2. 標準化 CSV 輸出
-    # ============================================
-    for frame_id, r in enumerate(results, 1):
-        save_results(r, frame_id, csv_path, source=source_path, save_mode="auto")
+def run_predict_on_validation_set(model, source_path, output_dir, imgsz=960, conf=0.4, iou=0.3, half=False):
+    """在驗證集上執行推論 (不含計算 mAP，僅產生 CSV)。"""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
     
-    return csv_path
+    csv_name = f"{source_path.parent.name}_predictions.csv" if source_path.is_dir() else f"{source_path.stem}_predictions.csv"
+    csv_path = output_dir / csv_name
+    if csv_path.exists(): csv_path.unlink()
+        
+    t_start = time.perf_counter()
+    results = model.predict(
+        source=str(source_path), imgsz=imgsz, conf=conf, iou=iou,
+        save=False, project=str(output_dir), name="val_predict",
+        verbose=False, agnostic_nms=True, stream=False, half=half
+    )
+    t_end = time.perf_counter()
+
+    print(f"\n✅ 儲存驗證集結果: {csv_path}")
+    for i, r in enumerate(results):
+        save_results(r, i, csv_path, source=source_path, save_mode="auto")
+
+    frames = len(results)
+    latency = (t_end - t_start) * 1000 / frames if frames > 0 else 0
+    print(f"   ⏱️ 偵測耗時: {(t_end-t_start)*1000:.2f} ms")
+    
+    return csv_path, latency
